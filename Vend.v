@@ -21,10 +21,12 @@
 module clock_gen(
 	input clk,
 	output reg clk_fast,
-	output reg clk_blink
+	output reg clk_blink,
+	output reg clk_click
 );
-	reg [17:0] c_fast;
-	reg [24:0] c_blink;
+	reg [26:0] c_fast;
+	reg [26:0] c_blink;
+	reg [26:0] c_click;
 	
 	always @ (posedge clk) begin
 		if (c_blink == 25'b1011111010111100001000000) begin
@@ -35,9 +37,14 @@ module clock_gen(
 			clk_fast <= ~clk_fast;
 			c_fast <= 0;
 		end
+		else if (c_click == 23'b11111111010100000000000) begin
+			clk_click <= ~clk_click;
+			c_click <= 0;
+		end
 		else begin
 			c_fast <= 1 + c_fast;
 			c_blink <= 1 + c_blink;
+			c_click <= 1 + c_click;
 		end
 	end
 endmodule
@@ -45,22 +52,27 @@ endmodule
 module display(
 	input clk_fast,
 	input clk_blink,
+	input clk_click,
 	input dollar,
 	input quarter,
 	input dime,
 	input nickel,
 	input credit,
 	input [7:0] sw,
-	output select_led,
-	output payment_led,
-	output vend_led,
 	output [3:0] an,
-	output reg[7:0] seg
+	output reg[7:0] seg,
+	output l_select,
+	output l_pay,
+	output l_vend
 );
 	reg[3:0] flip = 4'b0111;
 	wire[10:0] price;
 	wire[10:0] paid;
+	wire[10:0] disp_price;
+	wire[10:0] disp_vend;
 	wire[10:0] disp_val;
+	reg vend = 0;
+	
 	/*
 	sw[0] = $1.00
 	sw[1] = $1.20
@@ -78,9 +90,38 @@ module display(
 	reg[10:0] nickel_presses = 0;
 	reg credit_pressed = 0;
 	
+	always @(posedge clk_click) begin
+		if (price <= paid && sw != 8'b00000000) begin
+			vend <= 1;
+		end
+		else begin
+			if (sw == 0) vend <= 0;
+		end
+		
+		if (vend) begin
+			dollar_presses <= 0;
+			quarter_presses <= 0;
+			dime_presses <= 0;
+			nickel_presses <= 0;
+			credit_pressed <= 0;
+		end
+		
+		if (price != 0) begin 
+			if (dollar) dollar_presses <= dollar_presses + 1;
+			if (quarter) quarter_presses <= quarter_presses + 1;
+			if (dime) dime_presses <= dime_presses + 1;
+			if (nickel) nickel_presses <= nickel_presses + 1;
+			if (credit) credit_pressed <= credit_pressed + 1;
+		end
+	end
+	
 	assign paid = credit_pressed ? 1515 : dollar_presses*100 + quarter_presses*25 + dime_presses*10 + nickel_presses*5;
 	assign price = sw[0]*100 + sw[1]*120 + sw[2]*240 + sw[3]*300 + sw[4]*220 + sw[5]*195 + sw[6]*285 + sw[7]*55;
 	assign disp_val = paid < price ? price - paid : 0;
+	
+	assign l_select = !vend && price == 0;
+	assign l_pay = !vend && !l_select;
+	assign l_vend = vend;
 	
 	wire[3:0] thousands, hundreds, tens, ones;
 	binary_to_bcd conv(
@@ -91,101 +132,41 @@ module display(
 		.ones(ones)
 	);
 	
-	wire[7:0] tens_dollars, ones_dollars, tens_cents, ones_cents;
-	bcd_to_seg conv_tens_dollars(
+	wire[7:0] seg1, seg2, seg3, seg4;
+	bcd_to_seg conv_seg1(
 		.bcd(thousands),
-		.seg(tens_dollars)
+		.seg(seg1)
 	);
-	bcd_to_seg conv_ones_dollars(
+	bcd_to_seg conv_seg2(
 		.bcd(hundreds),
-		.seg(ones_dollars)
+		.seg(seg4)
 	);
-	bcd_to_seg conv_tens_cents(
+	bcd_to_seg conv_seg3(
 		.bcd(tens),
-		.seg(tens_cents)
+		.seg(seg3)
 	);
-	bcd_to_seg conv_ones_cents(
+	bcd_to_seg conv_seg4(
 		.bcd(ones),
-		.seg(ones_cents)
+		.seg(seg2)
 	);
-	reg vending = 0;
-	// NOTE: during testing, found some bugs:
-	// -> PAYMENT led will light up sometimes while VEND led is on
-	// ----> Maybe having to do with pressing the buttons after payment?
-	// ----> Also, maybe conditions need tweaking?
-	// -> Sometimes takes a bit of time for VEND led to turn on after
-	//    PAYMENT led turns off
-	// ----> Not in an always (synch) block but assigned with assign statements
-	// ----> Potentially due to updating vending (variable in assign statement)
-	//       in the always (synch) block
-	// ----> Actually, probably so after looking at waveform closely
-	// ----> Must somehow transform vending logic
-	// ----> UNLESS it isn't really that noticeable on the actual board
-	// ----> IF SO, then we're good
-	assign select_led = !vending && sw == 0 ? 1 : 0;
-	assign payment_led = disp_val > 0 ? 1 : 0;
-	assign vend_led = vending;
+
 	always @(posedge clk_fast) begin
-		if(credit) begin
-			credit_pressed = 1;
+		flip = {flip[0], flip[3:1]};
+		if (!vend) begin
+			if (!an[0]) 
+				seg = seg1;
+			else if (!an[1])
+				seg = seg2;
+			else if (!an[2])
+				seg = seg3;
+			else if (!an[3])
+				seg = seg4;
+		end 
+		else if (!clk_blink) begin
+			seg = 8'b11111111;
 		end
-		if(dollar) begin
-			dollar_presses = dollar_presses + 1;
-		end
-		if(quarter) begin
-			quarter_presses = quarter_presses + 1;
-		end
-		if(dime) begin
-			dime_presses = dime_presses + 1;
-		end
-		if(nickel) begin
-			nickel_presses = nickel_presses + 1;
-		end
-		if(clk_fast) begin
-			flip = {flip[0], flip[3:1]};
-			if(disp_val == 0 && paid > 0) begin
-				vending = 1;
-			end
-			if(vending && sw == 0) begin
-				vending = 0;
-				credit_pressed = 0;
-				dollar_presses = 0;
-				quarter_presses = 0;
-				dime_presses = 0;
-				nickel_presses = 0;
-			end
-			if (!an[0]) begin
-				if(!vending || clk_blink) begin
-					seg = tens_dollars;
-				end
-				else begin
-					seg = 8'b11111111;
-				end
-			end
-			else if (!an[1]) begin
-				if(!vending || clk_blink) begin
-					seg = ones_cents;
-				end
-				else begin
-					seg = 8'b11111111;
-				end
-			end
-			else if (!an[2]) begin
-				if(!vending || clk_blink) begin
-					seg = tens_cents;
-				end
-				else begin
-					seg = 8'b11111111;
-				end;
-			end
-			else if (!an[3]) begin
-				if(!vending || clk_blink) begin
-					seg = ones_dollars;
-				end
-				else begin
-					seg = 8'b11111111;
-				end
-			end
+		else begin
+			seg = 8'b11000000;
 		end
 	end
 	assign an[0] = flip[0];
@@ -318,19 +299,21 @@ module Vend(
 	input dime,
 	input nickel,
 	input credit,
-	output select_led,
-	output payment_led,
-	output vend_led,
 	output [7:0] seg,
-	output [3:0] an
+	output [3:0] an,
+	output l_select,
+	output l_pay,
+	output l_vend
 );
 
 wire clk_fast;
 wire clk_blink;
+wire clk_click;
 clock_gen clocks(
 	.clk(clk),
 	.clk_fast(clk_fast),
-	.clk_blink(clk_blink)
+	.clk_blink(clk_blink),
+	.clk_click(clk_click)
 );
 
 wire b_dollar;
@@ -371,17 +354,18 @@ debouncer d_credit(
 display disp(
 	.clk_fast(clk_fast),
 	.clk_blink(clk_blink),
+	.clk_click(clk_click),
 	.dollar(b_dollar),
 	.quarter(b_quarter),
 	.dime(b_dime),
 	.nickel(b_nickel),
 	.credit(b_credit),
 	.sw(sw),
-	.select_led(select_led),
-	.payment_led(payment_led),
-	.vend_led(vend_led),
 	.seg(seg),
-	.an(an)
+	.an(an),
+	.l_select(l_select),
+	.l_pay(l_pay),
+	.l_vend(l_vend)
 );
 
 endmodule
