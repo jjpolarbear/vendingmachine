@@ -160,7 +160,7 @@ module display(
 			else if (!an[2])
 				seg = seg3;
 			else if (!an[3])
-				seg = seg4;
+				seg = seg4 & 8'b01111111;
 		end 
 		else if (!clk_blink) begin
 			seg = 8'b11111111;
